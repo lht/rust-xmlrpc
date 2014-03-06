@@ -1,18 +1,25 @@
-use Encodable;
-use collections::TreeMap;
+#[feature(macro_rules)];
+extern crate serialize;
+
+use serialize::{Encodable, Encoder};
+use std::io;
+use std::io::MemWriter;
+use std::str;
+
+
 
 macro_rules! try( ($e:expr) => (
     match $e { Ok(e) => e, Err(e) => { self.error = Err(e); return } }
 ) )
 
 
-pub struct Encoder {
+pub struct Encoder<'a> {
     priv wr: &'a mut io::Writer,
     priv error: io::IoResult<()>,
 }
 
 impl<'a> Encoder<'a> {
-    pub fn new<'a>(wr: &<'a mut io::writer) -> Encode<'a> {
+    pub fn new<'a>(wr: &'a mut io::Writer) -> Encoder<'a> {
         Encoder { wr: wr, error: Ok(()) }
     }
 
@@ -32,26 +39,28 @@ impl<'a> Encoder<'a> {
     }
 }
 
+pub static MAXINT: i32 = 0x7FFFFFFF;
+pub static MININT: i32 = -0x7FFFFFFF;
 
-impl<'a> ::Encoder for Encoder<'a> {
+impl<'a> serialize::Encoder for Encoder<'a> {
     // TODO: cannot marshal None unless allow_none is enabled
     fn emit_nil(&mut self) { try!(write!(self.wr, "<nil/>")) }
 
-    fn emit_uint(&mut self, v: uint) { self.emit_u64(v as i32); }
-    fn emit_u64(&mut self, v: u64) { self.emit_f64(v as i32); }
-    fn emit_u32(&mut self, v: u32) { self.emit_f64(v as i32); }
-    fn emit_u16(&mut self, v: u16) { self.emit_f64(v as i32); }
-    fn emit_u8(&mut self, v: u8)   { self.emit_f64(v as i32); }
+    fn emit_uint(&mut self, v: uint) { self.emit_i32(v as i32); }
+    fn emit_u64(&mut self, v: u64) { self.emit_i32(v as i32); }
+    fn emit_u32(&mut self, v: u32) { self.emit_i32(v as i32); }
+    fn emit_u16(&mut self, v: u16) { self.emit_i32(v as i32); }
+    fn emit_u8(&mut self, v: u8)   { self.emit_i32(v as i32); }
 
-    fn emit_i64(&mut self, v: i64) { self.emit_f64(v as i32); }
-    fn emit_int(&mut self, v: int) { self.emit_f64(v as i32); }
+    fn emit_i64(&mut self, v: i64) { self.emit_i32(v as i32); }
+    fn emit_int(&mut self, v: int) { self.emit_i32(v as i32); }
     fn emit_i32(&mut self, v: i32) {
         if (v > MAXINT || v < MININT) {
         }
-        try!(write!(self.wr, "<value><int>{}</int></value>"));
+        try!(write!(self.wr, "<value><int>{}</int></value>", v));
     }
-    fn emit_i16(&mut self, v: i16) { self.emit_f64(v as i32); }
-    fn emit_i8(&mut self, v: i8)   { self.emit_f64(v as i32); }
+    fn emit_i16(&mut self, v: i16) { self.emit_f64(v as f64); }
+    fn emit_i8(&mut self, v: i8)   { self.emit_f64(v as f64); }
 
     fn emit_bool(&mut self, v: bool) {
         let b = if v { 1} else { 0 };
@@ -59,15 +68,13 @@ impl<'a> ::Encoder for Encoder<'a> {
     }
 
     fn emit_f64(&mut self, v: f64) {
-        try!(write!(self.wr,
-                    "<value><double>{}</double></value>",
-                    f64::to_str_digits(v, 6u)))
+        try!(write!(self.wr, "<value><double>{}</double></value>",v))
     }
     fn emit_f32(&mut self, v: f32) { self.emit_f64(v as f64); }
 
     fn emit_char(&mut self, v: char) { self.emit_str(str::from_char(v)) }
     fn emit_str(&mut self, v: &str) {
-        try!(write!(self.wr, "<value><string>{}</value></string>", escape_str(v)))
+        try!(write!(self.wr, "<value><string>{}</string></value>", v))
     }
 
     fn emit_enum(&mut self, _name: &str, f: |&mut Encoder<'a>|) { f(self) }
@@ -81,19 +88,22 @@ impl<'a> ::Encoder for Encoder<'a> {
         // Bunny => "Bunny"
         // Kangaroo(34,"William") => {"variant": "Kangaroo", "fields": [34,"William"]}
         if cnt == 0 {
-            try!(write!(self.wr, "{}", escape_str(name)));
+            try!(write!(self.wr, "<value><string>{}</string></value>", name));
         } else {
-            try!(write!(self.wr, "\\{\"variant\":"));
-            try!(write!(self.wr, "{}", escape_str(name)));
-            try!(write!(self.wr, ",\"fields\":["));
+            try!(write!(self.wr, "<value><struct><member>"));
+            try!(write!(self.wr, "<name>variant</name>"));
+            try!(write!(self.wr, "<value>{}</value></member>", name));
+            try!(write!(self.wr, "<member><name>fields</name>"));
+            try!(write!(self.wr, "<value><array><data>"));
             f(self);
-            try!(write!(self.wr, "]\\}"));
+            try!(write!(self.wr, "</data></array></value>"));
+            try!(write!(self.wr, "</member></struct>"));
         }
     }
 
     fn emit_enum_variant_arg(&mut self, idx: uint, f: |&mut Encoder<'a>|) {
         if idx != 0 {
-            try!(write!(self.wr, ","));
+            try!(write!(self.wr, "\n"));
         }
         f(self);
     }
@@ -114,9 +124,9 @@ impl<'a> ::Encoder for Encoder<'a> {
     }
 
     fn emit_struct(&mut self, _: &str, _: uint, f: |&mut Encoder<'a>|) {
-        try!(write!(self.wr, r"<value><struct>"));
+        try!(write!(self.wr, "<value><struct>"));
         f(self);
-        try!(write!(self.wr, r"</struct></value>"));
+        try!(write!(self.wr, "</struct></value>"));
     }
 
     fn emit_struct_field(&mut self,
@@ -124,7 +134,7 @@ impl<'a> ::Encoder for Encoder<'a> {
                          idx: uint,
                          f: |&mut Encoder<'a>|) {
         if idx != 0 { try!(write!(self.wr, ",")) }
-        try!(write!(self.wr, "<member><name>{}</name>", escape_str(name)));
+        try!(write!(self.wr, "<member><name>{}</name>", name));
         f(self);
         try!(write!(self.wr, "</member>"));
     }
@@ -151,31 +161,38 @@ impl<'a> ::Encoder for Encoder<'a> {
     fn emit_option_some(&mut self, f: |&mut Encoder<'a>|) { f(self); }
 
     fn emit_seq(&mut self, _len: uint, f: |&mut Encoder<'a>|) {
-        try!(write!(self.wr, "["));
+        try!(write!(self.wr, "<value><array>\n<data>\n"));
         f(self);
-        try!(write!(self.wr, "]"));
+        try!(write!(self.wr, "</data>\n</array></value>"));
     }
 
     fn emit_seq_elt(&mut self, idx: uint, f: |&mut Encoder<'a>|) {
-        if idx != 0 {
-            try!(write!(self.wr, ","));
-        }
-        f(self)
+        f(self);
+        try!(write!(self.wr, "\n"))
     }
 
     fn emit_map(&mut self, _len: uint, f: |&mut Encoder<'a>|) {
-        try!(write!(self.wr, r"\{"));
+        try!(write!(self.wr, "<value><struct>"));
         f(self);
-        try!(write!(self.wr, r"\}"));
+        try!(write!(self.wr, "</struct></value>"));
     }
 
     fn emit_map_elt_key(&mut self, idx: uint, f: |&mut Encoder<'a>|) {
-        if idx != 0 { try!(write!(self.wr, ",")) }
-        f(self)
+        try!(write!(self.wr, "<member><name>"));
+        f(self);
+        try!(write!(self.wr, "</name>"))
     }
 
     fn emit_map_elt_val(&mut self, _idx: uint, f: |&mut Encoder<'a>|) {
-        try!(write!(self.wr, ":"));
-        f(self)
+        f(self);
+        try!(write!(self.wr, "</member>"))
     }
+}
+
+
+fn main() {
+    let mut wr = std::io::stdio::stdout();
+    let mut e = Encoder::new(&mut wr as &mut std::io::Writer);
+    "this_is_stirng".encode(&mut e);
+    ["abc", "xyz", "123"].encode(&mut e);
 }
