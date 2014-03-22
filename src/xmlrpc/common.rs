@@ -1,22 +1,71 @@
-#[feature(macro_rules)];
-extern crate serialize;
+use collections::TreeMap;
+use serialize;
+use serialize::{Encodable};
 
-use serialize::{Encodable, Encoder};
 use std::io;
-use std::io::MemWriter;
 use std::str;
-
-
 
 macro_rules! try( ($e:expr) => (
     match $e { Ok(e) => e, Err(e) => { self.error = Err(e); return } }
 ) )
+
+#[deriving(Clone, Eq)]
+pub enum Value {
+    Boolean(bool),
+    Int(i32),
+    Double(f32),
+    String(~str),
+    DateTime(~str),
+    Base64(BinaryType),
+    Array(ArrayType),
+    Struct(~StructType),
+    Nil,
+}
+
+pub type BinaryType = ~[u8];
+pub type StructType = TreeMap<~str, Value>;
+pub type ArrayType = ~[Value];
+
+
+pub trait ToValue {
+    fn to_value(&self) -> Value;
+}
+
+
+impl ToValue for int { fn to_value(&self) -> Value { Int(*self as i32) } }
+impl ToValue for i8  { fn to_value(&self) -> Value { Int(*self as i32) } }
+impl ToValue for i16 { fn to_value(&self) -> Value { Int(*self as i32) } }
+impl ToValue for i32 { fn to_value(&self) -> Value { Int(*self as i32) } }
+impl ToValue for i64 { fn to_value(&self) -> Value { Int(*self as i32) } }
+impl ToValue for u8  { fn to_value(&self) -> Value { Int(*self as i32) } }
+impl ToValue for u16 { fn to_value(&self) -> Value { Int(*self as i32) } }
+impl ToValue for u32 { fn to_value(&self) -> Value { Int(*self as i32) } }
+impl ToValue for u64 { fn to_value(&self) -> Value { Int(*self as i32) } }
+
+impl ToValue for f32 { fn to_value(&self) -> Value { Double(*self as f32) } }
+impl ToValue for f64 { fn to_value(&self) -> Value { Double(*self as f32) } }
+impl ToValue for ~str { fn to_value(&self) -> Value { String((*self).clone()) } }
+
+impl<A:ToValue> ToValue for ~[A] {
+    fn to_value(&self) -> Value { Array(self.map(|e| e.to_value())) }
+}
+
+impl<A:ToValue> ToValue for TreeMap<~str, A> {
+    fn to_value(&self) -> Value {
+        let mut d = TreeMap::new();
+        for (key, value) in self.iter() {
+            d.insert((*key).clone(), value.to_value());
+        }
+        Struct(~d)
+    }
+}
 
 
 pub struct Encoder<'a> {
     priv wr: &'a mut io::Writer,
     priv error: io::IoResult<()>,
 }
+
 
 impl<'a> Encoder<'a> {
     pub fn new<'a>(wr: &'a mut io::Writer) -> Encoder<'a> {
@@ -25,7 +74,7 @@ impl<'a> Encoder<'a> {
 
     pub fn buffer_encode<T:Encodable<Encoder<'a>>>(to_encode_object: &T) -> ~[u8]  {
        //Serialize the object in a string using a writer
-        let mut m = MemWriter::new();
+        let mut m = io::MemWriter::new();
         {
             let mut encoder = Encoder::new(&mut m as &mut io::Writer);
             to_encode_object.encode(&mut encoder);
@@ -39,31 +88,69 @@ impl<'a> Encoder<'a> {
     }
 }
 
-pub static MAXINT: i32 = 0x7FFFFFFF;
-pub static MININT: i32 = -0x7FFFFFFF;
+
+impl<E: serialize::Encoder> Encodable<E> for Value {
+    fn encode(&self, e: &mut E) {
+        match *self {
+            Boolean(v)      => v.encode(e),
+            Int(v)          => v.encode(e),
+            Double(v)       => v.encode(e),
+            String(ref v)   => v.encode(e),
+            DateTime(ref v) => v.encode(e),
+            Base64(ref v)   => v.encode(e),
+            Array(ref v)    => v.encode(e),
+            Struct(ref v)   => v.encode(e),
+            Nil             => e.emit_nil(),
+        }
+    }
+}
+
+macro_rules! assert_within_range(
+    ($var:ident) => (
+        if $var >> 32 != 0 {
+            fail!("assertion failed: `{:?} exceeds range`", $var)
+        }
+    );
+)
 
 impl<'a> serialize::Encoder for Encoder<'a> {
-    // TODO: cannot marshal None unless allow_none is enabled
     fn emit_nil(&mut self) { try!(write!(self.wr, "<nil/>")) }
 
-    fn emit_uint(&mut self, v: uint) { self.emit_i32(v as i32); }
-    fn emit_u64(&mut self, v: u64) { self.emit_i32(v as i32); }
-    fn emit_u32(&mut self, v: u32) { self.emit_i32(v as i32); }
+    fn emit_uint(&mut self, v: uint) {
+        assert_within_range!(v);
+        self.emit_i32(v as i32);
+    }
+    fn emit_u64(&mut self, v: u64) {
+        assert_within_range!(v);
+        self.emit_i32(v as i32);
+    }
+    fn emit_u32(&mut self, v: u32) {
+        assert_within_range!(v);
+        self.emit_i32(v as i32);
+    }
     fn emit_u16(&mut self, v: u16) { self.emit_i32(v as i32); }
     fn emit_u8(&mut self, v: u8)   { self.emit_i32(v as i32); }
 
-    fn emit_i64(&mut self, v: i64) { self.emit_i32(v as i32); }
-    fn emit_int(&mut self, v: int) { self.emit_i32(v as i32); }
+    fn emit_i64(&mut self, v: i64) {
+        assert_within_range!(v);
+        self.emit_i32(v as i32);
+    }
+    fn emit_int(&mut self, v: int) {
+        assert_within_range!(v);
+        self.emit_i32(v as i32);
+    }
     fn emit_i32(&mut self, v: i32) {
-        if (v > MAXINT || v < MININT) {
-        }
         try!(write!(self.wr, "<value><int>{}</int></value>", v));
     }
-    fn emit_i16(&mut self, v: i16) { self.emit_f64(v as f64); }
-    fn emit_i8(&mut self, v: i8)   { self.emit_f64(v as f64); }
+    fn emit_i16(&mut self, v: i16) {
+        self.emit_i32(v as i32);
+    }
+    fn emit_i8(&mut self, v: i8)   {
+        self.emit_i32(v as i32);
+    }
 
     fn emit_bool(&mut self, v: bool) {
-        let b = if v { 1} else { 0 };
+        let b = if v { 1 } else { 0 };
         try!(write!(self.wr, "<value><boolean>{}</boolean></value>", b));
     }
 
@@ -166,7 +253,7 @@ impl<'a> serialize::Encoder for Encoder<'a> {
         try!(write!(self.wr, "</data>\n</array></value>"));
     }
 
-    fn emit_seq_elt(&mut self, idx: uint, f: |&mut Encoder<'a>|) {
+    fn emit_seq_elt(&mut self, _idx: uint, f: |&mut Encoder<'a>|) {
         f(self);
         try!(write!(self.wr, "\n"))
     }
@@ -177,7 +264,7 @@ impl<'a> serialize::Encoder for Encoder<'a> {
         try!(write!(self.wr, "</struct></value>"));
     }
 
-    fn emit_map_elt_key(&mut self, idx: uint, f: |&mut Encoder<'a>|) {
+    fn emit_map_elt_key(&mut self, _idx: uint, f: |&mut Encoder<'a>|) {
         try!(write!(self.wr, "<member><name>"));
         f(self);
         try!(write!(self.wr, "</name>"))
@@ -189,10 +276,3 @@ impl<'a> serialize::Encoder for Encoder<'a> {
     }
 }
 
-
-fn main() {
-    let mut wr = std::io::stdio::stdout();
-    let mut e = Encoder::new(&mut wr as &mut std::io::Writer);
-    "this_is_stirng".encode(&mut e);
-    ["abc", "xyz", "123"].encode(&mut e);
-}
